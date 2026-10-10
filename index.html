@@ -131,6 +131,10 @@ tr:last-child td{border-bottom:none}
 .row .b .d{font-size:13px;color:var(--muted)}
 
 .tag{display:inline-block;font-size:12px;font-weight:700;padding:3px 10px;border-radius:20px;background:var(--bg2);color:var(--text);margin:2px 4px 2px 0}
+.tbtn{background:var(--bg2);border:1px solid var(--line);border-radius:8px;padding:5px 11px;font-size:12px;color:var(--muted);cursor:pointer;display:inline-flex;align-items:center;gap:5px}
+.tbtn.on{background:var(--brand);border-color:var(--brand);color:#fff}
+.tbtn.legend.on{background:var(--bg2);border-color:var(--c,var(--brand));color:var(--text);font-weight:600}
+.dot{display:inline-block;width:8px;height:8px;border-radius:50%}
 
 /* empty placeholder */
 .empty{background:var(--bg2);border:1px dashed var(--line);border-radius:12px;padding:18px;text-align:center;color:var(--muted);font-size:13px}
@@ -198,6 +202,7 @@ tr:last-child td{border-bottom:none}
     </div>
     <nav id="mainNav">
       <button data-panel="overview" class="active">复盘总览</button>
+      <button data-panel="trend">走势分析</button>
       <button data-panel="report">完整报告</button>
       <button data-panel="history">历史档案</button>
       <button data-panel="source">数据来源</button>
@@ -219,6 +224,9 @@ tr:last-child td{border-bottom:none}
   <main>
     <!-- 复盘总览 -->
     <section class="panel active" id="panel-overview"></section>
+
+    <!-- 走势分析 -->
+    <section class="panel" id="panel-trend"></section>
 
     <!-- 完整报告 -->
     <section class="panel" id="panel-report"></section>
@@ -665,6 +673,7 @@ function switchPanel(name){
 }
 function sidePanel(name){
   if(name==='overview') renderOverview();
+  else if(name==='trend') renderTrend();
   else if(name==='report') renderReport();
   else if(name==='history') renderHistory();
   else if(name==='source') renderSource();
@@ -674,6 +683,135 @@ function sidePanel(name){
 function closeDrawerFn(){ $('#overlay').classList.remove('show'); $('#drawer').classList.remove('show'); }
 function closeDrawer(){ closeDrawerFn(); }
 function openDrawer(){ renderSidebar(); $('#overlay').classList.add('show'); $('#drawer').classList.add('show'); }
+
+/* ================= 走势分析 ================= */
+const TREND_META = [
+  {key:'ss',  name:'上证指数',  color:'#e24a3a', get:r=>r.index&&r.index['上证指数']&&r.index['上证指数'].close},
+  {key:'zz',  name:'中证1000', color:'#1c7ed6', get:r=>r.index&&r.index['中证1000']&&r.index['中证1000'].close},
+  {key:'amv', name:'活跃市值',  color:'#f08c00', get:r=>r.amv_yi},
+  {key:'rz',  name:'两融余额',  color:'#0a9d72', get:r=>r.rzrq_yi}
+];
+let trendRange = 3;   /* 0=3月 1=6月 2=1年 3=全部 */
+let trendShow = {ss:true, zz:true, amv:true, rz:false};
+let trendCache = null;
+
+function renderTrend(){
+  const el = $('#panel-trend');
+  const reps = (window.REPORTS.reports||[]).slice().sort((a,b)=>a.date<b.date?-1:1);
+  if(reps.length<2){ el.innerHTML = '<div class="card"><div class="empty">数据不足，至少需要2个交易日。</div></div>'; return; }
+  const ranges = [['3个月',90],['6个月',180],['1年',365],['全部',99999]];
+  el.innerHTML = `
+  <div class="report-hero">
+    <div>
+      <h1>走势分析</h1>
+      <div class="muted" style="margin-top:4px">归一化对比（区间起点=100）· 活跃市值为模型估算口径</div>
+    </div>
+  </div>
+  <div class="card" style="padding:14px">
+    <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:10px">
+      <div id="trendRanges" style="display:flex;gap:6px">
+        ${ranges.map((r,i)=>`<button class="tbtn${i===trendRange?' on':''}" data-range="${i}">${r[0]}</button>`).join('')}
+      </div>
+      <div id="trendLegend" style="display:flex;gap:6px;flex-wrap:wrap;margin-left:auto">
+        ${TREND_META.map(m=>`<button class="tbtn legend${trendShow[m.key]?' on':''}" data-key="${m.key}" style="--c:${m.color}"><span class="dot" style="background:${m.color}"></span>${m.name}</button>`).join('')}
+      </div>
+    </div>
+    <div style="position:relative">
+      <canvas id="trendCanvas" style="width:100%;height:420px;display:block"></canvas>
+      <div id="trendTip" style="position:absolute;display:none;pointer-events:none;background:var(--card);border:1px solid var(--line);border-radius:8px;padding:8px 10px;font-size:12px;box-shadow:var(--shadow);z-index:5;white-space:nowrap"></div>
+    </div>
+    <div class="muted" style="font-size:12px;margin-top:8px">提示：鼠标悬停/手指触摸查看每日数值；点击图例可显示/隐藏曲线。</div>
+  </div>`;
+  el.querySelectorAll('#trendRanges .tbtn').forEach(b=>b.onclick=()=>{ trendRange=+b.dataset.range; renderTrend(); });
+  el.querySelectorAll('#trendLegend .tbtn').forEach(b=>b.onclick=()=>{ const k=b.dataset.key; trendShow[k]=!trendShow[k]; renderTrend(); });
+  drawTrend(reps, ranges[trendRange][1]);
+}
+
+function drawTrend(reps, days){
+  const cv = $('#trendCanvas'); if(!cv) return;
+  const cut = reps.length>days ? reps.slice(-days) : reps;
+  const dates = cut.map(r=>r.date);
+  /* 归一化: 每条线以自己第一个有效值为100 */
+  const series = TREND_META.filter(m=>trendShow[m.key]).map(m=>{
+    const raw = cut.map((r,i)=>[i, m.get(r)]);
+    const first = raw.find(p=>p[1]!=null);
+    const base = first?first[1]:null;
+    return {name:m.name, color:m.color, base,
+      pts: raw.map(p=>p[1]!=null&&base?[p[0], +(p[1]/base*100).toFixed(2)]:[p[0], null])};
+  }).filter(s=>s.base);
+  trendCache = {dates, series};
+  const dpr = window.devicePixelRatio||1;
+  const W = cv.clientWidth, H = cv.clientHeight;
+  cv.width = W*dpr; cv.height = H*dpr;
+  const ctx = cv.getContext('2d');
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  ctx.clearRect(0,0,W,H);
+  const css = getComputedStyle(document.documentElement);
+  const cLine = css.getPropertyValue('--line').trim(), cText = css.getPropertyValue('--muted').trim();
+  const pad = {l:46, r:14, t:14, b:26};
+  const iw = W-pad.l-pad.r, ih = H-pad.t-pad.b;
+  /* 值域 */
+  let vmin=1e9, vmax=-1e9;
+  series.forEach(s=>s.pts.forEach(p=>{ if(p[1]!=null){ if(p[1]<vmin)vmin=p[1]; if(p[1]>vmax)vmax=p[1]; } }));
+  if(vmin>=vmax){vmin=90;vmax=110;}
+  const span = vmax-vmin; vmin-=span*0.06; vmax+=span*0.06;
+  const X = i => pad.l + (dates.length<2?0:i/(dates.length-1)*iw);
+  const Y = v => pad.t + (1-(v-vmin)/(vmax-vmin))*ih;
+  /* 网格+Y轴 */
+  ctx.font='11px sans-serif'; ctx.fillStyle=cText; ctx.strokeStyle=cLine; ctx.lineWidth=1;
+  for(let g=0; g<=4; g++){
+    const v = vmin+(vmax-vmin)*g/4, y = Y(v);
+    ctx.beginPath(); ctx.moveTo(pad.l,y); ctx.lineTo(W-pad.r,y); ctx.globalAlpha=.5; ctx.stroke(); ctx.globalAlpha=1;
+    ctx.textAlign='right'; ctx.fillText(v.toFixed(0), pad.l-6, y+4);
+  }
+  /* X轴刻度(5个) */
+  ctx.textAlign='center';
+  const nT = Math.min(5, dates.length);
+  for(let g=0; g<nT; g++){
+    const i = Math.round(g*(dates.length-1)/Math.max(1,nT-1));
+    ctx.fillText(dates[i].slice(2), X(i), H-8);
+  }
+  /* 100基准线 */
+  if(vmin<=100&&vmax>=100){
+    ctx.save(); ctx.setLineDash([4,4]); ctx.strokeStyle=cText; ctx.globalAlpha=.55;
+    ctx.beginPath(); ctx.moveTo(pad.l,Y(100)); ctx.lineTo(W-pad.r,Y(100)); ctx.stroke(); ctx.restore();
+  }
+  /* 曲线 */
+  series.forEach(s=>{
+    ctx.strokeStyle=s.color; ctx.lineWidth=2; ctx.beginPath();
+    let started=false;
+    s.pts.forEach(p=>{
+      if(p[1]==null){ started=false; return; }
+      const x=X(p[0]), y=Y(p[1]);
+      if(!started){ ctx.moveTo(x,y); started=true; } else ctx.lineTo(x,y);
+    });
+    ctx.stroke();
+  });
+  /* 交互 */
+  const tip = $('#trendTip');
+  function onMove(clientX){
+    const rect = cv.getBoundingClientRect();
+    const mx = clientX-rect.left;
+    if(mx<pad.l||mx>W-pad.r){ tip.style.display='none'; return; }
+    const i = Math.round((mx-pad.l)/iw*(dates.length-1));
+    if(i<0||i>=dates.length){ tip.style.display='none'; return; }
+    let html = `<b>${dates[i]}</b>`;
+    series.forEach(s=>{
+      const v = s.pts[i][1];
+      if(v!=null){
+        const chg = v-100;
+        html += `<div><span class="dot" style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${s.color};margin-right:4px"></span>${s.name} <b style="color:${chg>=0?'var(--up)':'var(--down)'}">${chg>=0?'+':''}${chg.toFixed(1)}%</b></div>`;
+      }
+    });
+    tip.innerHTML = html; tip.style.display='block';
+    const tw = tip.offsetWidth;
+    let tx = mx+14; if(tx+tw>W-4) tx = mx-tw-14;
+    tip.style.left = tx+'px'; tip.style.top = '10px';
+  }
+  cv.onmousemove = e=>onMove(e.clientX);
+  cv.onmouseleave = ()=>tip.style.display='none';
+  cv.ontouchstart = cv.ontouchmove = e=>{ e.preventDefault(); onMove(e.touches[0].clientX); };
+}
 
 /* events */
 document.addEventListener('click', e=>{
