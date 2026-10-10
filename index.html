@@ -169,6 +169,22 @@ tr:last-child td{border-bottom:none}
 .drawer{position:fixed;top:0;left:0;bottom:0;width:300px;background:var(--bg);z-index:100;transform:translateX(-100%);transition:transform .25s;box-shadow:var(--shadow);padding:20px;overflow-y:auto}
 .drawer.show{transform:none}
 @media(min-width:920px){.overlay,.drawer{display:none}}
+/* 手机端：隐藏桌面侧栏，主内容占满全宽，用☰抽屉代替 */
+@media(max-width:919px){
+  .sidebar{display:none}
+  .layout{padding:14px 12px 50px}
+  .brand small{display:none}
+  .header-inner{gap:10px;padding:0 12px}
+  nav button{padding:7px 10px;font-size:13px}
+  .report-hero{padding:16px 16px}
+  .card{padding:13px 14px}
+  .kpi .val{font-size:19px}
+  .idx-grid{grid-template-columns:repeat(2,1fr)}
+  .kpi-row{grid-template-columns:repeat(2,1fr)}
+  table{font-size:13px}
+  th,td{padding:7px 8px}
+  .cal-grid .day{height:32px}
+}
 </style>
 </head>
 <body>
@@ -633,7 +649,7 @@ function renderSidebar(){
 
 function selectDate(d, closeDrawer){
   selectedDate = d;
-  if(closeDrawer) closeDrawer();
+  if(closeDrawer || window.innerWidth < 920) closeDrawerFn();
   renderSidebar();
   if(currentPanel==='overview') renderOverview();
   if(currentPanel==='report') renderReport();
@@ -655,7 +671,8 @@ function sidePanel(name){
 }
 
 /* drawer */
-function closeDrawer(){ $('#overlay').classList.remove('show'); $('#drawer').classList.remove('show'); }
+function closeDrawerFn(){ $('#overlay').classList.remove('show'); $('#drawer').classList.remove('show'); }
+function closeDrawer(){ closeDrawerFn(); }
 function openDrawer(){ renderSidebar(); $('#overlay').classList.add('show'); $('#drawer').classList.add('show'); }
 
 /* events */
